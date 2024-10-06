@@ -1,0 +1,161 @@
+# Setup chunk options: suppress output for messages and warnings, and set a seed for reproducibility
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, cache=TRUE)
+set.seed(85)
+
+## Introduction
+
+# The dataset contains the opening response time (ms) of an electromechanical valve. 
+# The project aims to analyze how seal vintage, fluid type, and applied coil voltage 
+# affect the valve's opening response time.
+
+## Exploratory Data Analysis
+
+# Load necessary libraries and read in the dataset
+library(rjags)
+library(ggplot2)
+
+# Read the dataset and clean it up by removing unnecessary columns
+df = read.csv('capstone_data_set.csv')
+df = df[, -c(1,2)]  # Remove the first two columns which are not needed
+df$Voltage = as.factor(df$Voltage)  # Convert the Voltage column to a factor
+
+# Calculate the probability that response time at 24V is less than at 30V
+prob = mean(df$Response.Time_ms[df$Voltage == 30] <= df$Response.Time_ms[df$Voltage == 24])
+
+# Store response time values in a variable for future use
+data_resp_time = df$Response.Time_ms
+
+# Display summary statistics of the dataset
+summary(df)
+
+## Data Description:
+# * Valve.Rev: Valve revision
+# * Fluid: Type of fluid used (masked factors)
+# * Time.Between.Actuations_hr: Time between valve actuations in hours
+# * *.Age: Age of the components (plunger, coil, etc.)
+# * Voltage: Applied DC solenoid coil voltage
+# * Seal.Type: Types of seal materials (masked factors)
+# * Response.Time_ms: Valve opening time in milliseconds (ms)
+
+### Plotting
+
+# Pair plot of selected variables to explore relationships
+library(GGally)
+ggpairs(df[,c(1,2,6,9)], aes(color=Voltage, alpha=0.4))
+
+# Density plot of response time to examine the distribution
+p <- ggplot(data=df, aes(x=Response.Time_ms))
+p <- p + geom_density()
+print(p)
+
+# Density plot of response time by voltage group
+p <- ggplot(data=df, aes(x=Response.Time_ms, color=Voltage, group=Voltage))
+p <- p + geom_density()
+print(p)
+
+# Box plot of response time versus Voltage, with color representing Fluid
+p <- ggplot(df, aes(Voltage, Response.Time_ms))
+p <- p + geom_boxplot(outlier.colour = "red", outlier.shape = 1, aes(color=Fluid))
+p <- p + geom_jitter(width=0.2)
+print(p)
+
+## Modeling
+
+# Prepare for Bayesian linear modeling by log-transforming the response time
+df$logresponse = log(df$Response.Time_ms)
+df$Response.Time_ms <- NULL  # Remove the original response time column
+
+# Convert relevant factors into numeric binary variables for modeling
+df$is.new.vlv = as.numeric(df$Valve.Rev == 'New')
+df$is.new.plunger = as.numeric(df$Plunger.Age == 'New')
+df$is.new.coil = as.numeric(df$Coil.Age == 'New')
+df$is.24v = as.numeric(df$Voltage == '24')
+df$is.seal_A = as.numeric(df$Seal.Type == 'A')
+df$is.new.seal = as.numeric(df$Seal.Age == 'New')
+df$Fluid = as.numeric(df$Fluid)
+
+# Define parameters for Bayesian modeling: interaction terms, number of chains, burn-in iterations, and total iterations
+n.interaction.terms = 3
+n.chains = 3
+n.burn.iter = 5000
+n.iter = 100000
+
+# Define the Bayesian model string
+mod_string = " model {
+  for (i in 1:n) {
+    y[i] ~ dnorm(mu[i], prec)
+    mu[i] = b[1] + b[2]*is.new.vlv[i] + b[3]*fluid[i] + b[4]*time[i] + b[5]*is.new.plunger[i] + 
+            b[6]*is.new.coil[i] + b[7]*is.24v[i] + b[8]*is.seal_A[i] + b[9]*is.new.seal[i] + 
+            b[10]*is.24v[i]*fluid[i] + b[11]*is.24v[i]*is.new.seal[i] + b[12]*is.24v[i]*is.new.vlv[i]
+  }
+
+  for (j in 1:m) {
+    b[j] ~ dnorm(0.0, 1.0/1.0e2)
+  }
+
+  prec ~ dgamma(5/2.0, 2*10.0/2.0)
+  sig2 = 1.0 / prec
+  sig = sqrt(sig2)
+}"
+
+# Prepare data for JAGS
+data_jags = list(
+  n = nrow(df),
+  m = 9 + n.interaction.terms,
+  y = df$logresponse,
+  is.new.vlv = df$is.new.vlv,
+  fluid = df$Fluid,
+  time = df$Time.Between.Actuations_hr,
+  is.new.plunger = df$is.new.plunger,
+  is.new.coil = df$is.new.coil,
+  is.24v = df$is.24v,
+  is.seal_A = df$is.seal_A,
+  is.new.seal = df$is.new.seal
+)
+
+# Parameters to monitor during sampling
+params = c("b", "sig2")
+
+# Initialize and run the JAGS model
+mod = jags.model(textConnection(mod_string), data = data_jags, n.chains = n.chains)
+update(mod, n.burn.iter)  # Burn-in period
+
+# Sample from the posterior distribution
+mod_sim = coda.samples(model = mod, variable.names = params, n.iter = n.iter)
+
+# Combine results from multiple chains
+mod_csim = do.call(rbind, mod_sim)
+
+# Plot autocorrelation diagnostics
+autocorr.diag(mod_sim)
+
+# Calculate effective sample sizes for each parameter
+effectiveSize(mod_sim)
+
+# Calculate posterior means of the coefficients
+pm_params = colMeans(mod_csim)
+pm_params
+
+# Plot residuals to check for dependency on the variance with respect to data points
+X = as.matrix(cbind(1, df[,c(10,2,3,11,12,13,14,15)], df$Fluid * df$is.24v, df$is.new.seal * df$is.24v, df$is.24v * df$is.new.vlv))
+last.pm.params.col = 9 + n.interaction.terms + 1
+log_yhat = X %*% pm_params[seq(1,9 + n.interaction.terms)]
+resid = data_jags$y - log_yhat
+plot(resid)
+
+## Results
+
+# Density plot comparing the modeled and observed log response time distributions
+modeled_data = data.frame(Response.Time_ms = exp(log_yhat), vec = 'model')
+observed_data = data.frame(Response.Time_ms = data_resp_time, vec = 'observed')
+data = rbind(modeled_data, observed_data)
+
+p <- ggplot(data, aes(Response.Time_ms, group = vec, col = vec)) + geom_density()
+print(p)
+
+# Using the modeled posterior distribution, calculate the probability that the response time given 30 volts is less than 24 volts
+n_sum = nrow(mod_csim)
+X.24 = X[X[,6] == 1, ]
+X.30 = X[X[,6] == 0, ]
+mod_csim = mod_csim[, seq(1,9 + n.interaction.terms)]
+prob
