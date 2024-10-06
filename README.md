@@ -1,6 +1,10 @@
 # Bayesian-Methods-For-Response-Time-Analysis
 This repository analyzes the opening response time of an electromechanical valve, focusing on seal vintage, fluid type, and coil voltage. It uses Bayesian modeling to identify key predictors influencing valve performance, complemented by exploratory data analysis and visualization to enhance understanding of these dynamics.
 
+<p align="center">
+  <img src="pic.webp" alt="Description of Image" style="width: 100%; height: auto;"/>
+</p>
+
 ## Introduction
 
 This project analyzes the opening response time (in milliseconds) of an electromechanical valve, which controls the flow of various fluids actuated by a solenoid. The focus is on determining how different factors—specifically seal vintage, fluid type, and applied coil voltage—affect the valve's response time.
